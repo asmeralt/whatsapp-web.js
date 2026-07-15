@@ -1368,6 +1368,7 @@ class Client extends EventEmitter {
      */
     async logout() {
         await this.pupPage.evaluate(() => {
+            if (typeof window.require !== 'function') return;
             return window.require('WAWebSocketModel').Socket.logout();
         });
         await this.pupBrowser.close();
@@ -2055,6 +2056,7 @@ class Client extends EventEmitter {
      */
     async getState() {
         return await this.pupPage.evaluate(() => {
+            if (typeof window.require !== 'function') return null;
             return window.require('WAWebSocketModel').Socket.state ?? null;
         });
     }
