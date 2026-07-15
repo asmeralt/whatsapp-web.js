@@ -156,7 +156,7 @@ class GroupChat extends Chat {
                 };
 
                 for (let pWid of participantWids) {
-                    const pId = pWid._serialized;
+                    const pId = window.WWebJS.getSerializedId(pWid);
                     pWid =
                         pWid.server === 'lid'
                             ? window
@@ -170,7 +170,13 @@ class GroupChat extends Chat {
                         isInviteV4Sent: false,
                     };
 
-                    if (groupParticipants.some((p) => p._serialized === pId)) {
+                    if (
+                        groupParticipants.some(
+                            (p) =>
+                                window.WWebJS.getSerializedId(p.id ?? p) ===
+                                pId,
+                        )
+                    ) {
                         participantData[pId].code = 409;
                         participantData[pId].message = errorCodes[409];
                         continue;
@@ -223,7 +229,7 @@ class GroupChat extends Chat {
                                 .require('WAWebChatSendMessages')
                                 .sendGroupInviteMessage(
                                     userChat,
-                                    group.id._serialized,
+                                    window.WWebJS.getSerializedId(group.id),
                                     groupName,
                                     rpcResult.inviteV4Code,
                                     rpcResult.inviteV4CodeExp,
@@ -274,10 +280,10 @@ class GroupChat extends Chat {
 
                             return (
                                 chat.groupMetadata.participants.get(
-                                    lid?._serialized,
+                                    window.WWebJS.getSerializedId(lid),
                                 ) ||
                                 chat.groupMetadata.participants.get(
-                                    phone?._serialized,
+                                    window.WWebJS.getSerializedId(phone),
                                 )
                             );
                         }),
@@ -312,10 +318,10 @@ class GroupChat extends Chat {
 
                             return (
                                 chat.groupMetadata.participants.get(
-                                    lid?._serialized,
+                                    window.WWebJS.getSerializedId(lid),
                                 ) ||
                                 chat.groupMetadata.participants.get(
-                                    phone?._serialized,
+                                    window.WWebJS.getSerializedId(phone),
                                 )
                             );
                         }),
@@ -350,10 +356,10 @@ class GroupChat extends Chat {
 
                             return (
                                 chat.groupMetadata.participants.get(
-                                    lid?._serialized,
+                                    window.WWebJS.getSerializedId(lid),
                                 ) ||
                                 chat.groupMetadata.participants.get(
-                                    phone?._serialized,
+                                    window.WWebJS.getSerializedId(phone),
                                 )
                             );
                         }),

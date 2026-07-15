@@ -4,6 +4,44 @@ exports.LoadUtils = () => {
     window.WWebJS = {};
 
     /**
+     * Recent WhatsApp Web builds renamed the serialized ID string on wid and
+     * message key objects from `_serialized` to `$1`. Returns the serialized
+     * ID string of a wid-like value, accepting both shapes (or a plain string).
+     * @param {string|Object} idLike A wid, message key or serialized ID string
+     * @returns {string|undefined} The serialized ID string
+     */
+    window.WWebJS.getSerializedId = (idLike) => {
+        if (!idLike || typeof idLike === 'string') return idLike;
+        return idLike._serialized ?? idLike.$1;
+    };
+
+    /**
+     * Walks a serialized model and restores the legacy `_serialized` property
+     * on every ID-like object that only carries the new `$1` property, so the
+     * rest of the library (and its public API) can keep relying on it.
+     * @param {Object} obj The serialized model to normalize in place
+     * @returns {Object} The same object, normalized
+     */
+    window.WWebJS.normalizeSerializedIds = (obj, seen = new WeakSet()) => {
+        if (!obj || typeof obj !== 'object' || seen.has(obj)) return obj;
+        seen.add(obj);
+        if (obj._serialized === undefined && typeof obj.$1 === 'string') {
+            try {
+                obj._serialized = obj.$1;
+            } catch (ignoredError) {
+                // non-writable object
+            }
+        }
+        for (const key of Object.keys(obj)) {
+            const value = obj[key];
+            if (value && typeof value === 'object') {
+                window.WWebJS.normalizeSerializedIds(value, seen);
+            }
+        }
+        return obj;
+    };
+
+    /**
      * Helper function that compares between two WWeb versions. Its purpose is to help the developer to choose the correct code implementation depending on the comparison value and the WWeb version.
      * @param {string} lOperand The left operand for the WWeb version string to compare with
      * @param {string} operator The comparison operator
@@ -582,7 +620,7 @@ exports.LoadUtils = () => {
 
         return window
             .require('WAWebCollections')
-            .Msg.get(newMsgKey._serialized);
+            .Msg.get(window.WWebJS.getSerializedId(newMsgKey));
     };
 
     window.WWebJS.editMessage = async (msg, content, options = {}) => {
@@ -625,7 +663,9 @@ exports.LoadUtils = () => {
         await window
             .require('WAWebSendMessageEditAction')
             .sendMessageEdit(msg, content, internalOptions);
-        return window.require('WAWebCollections').Msg.get(msg.id._serialized);
+        return window
+            .require('WAWebCollections')
+            .Msg.get(window.WWebJS.getSerializedId(msg.id));
     };
 
     window.WWebJS.toStickerData = async (mediaInfo) => {
@@ -830,13 +870,13 @@ exports.LoadUtils = () => {
 
         if (typeof msg.id.remote === 'object') {
             msg.id = Object.assign({}, msg.id, {
-                remote: msg.id.remote._serialized,
+                remote: window.WWebJS.getSerializedId(msg.id.remote),
             });
         }
 
         delete msg.pendingAckUpdate;
 
-        return msg;
+        return window.WWebJS.normalizeSerializedIds(msg);
     };
 
     window.WWebJS.getChat = async (chatId, { getAsModel = true } = {}) => {
@@ -953,7 +993,7 @@ exports.LoadUtils = () => {
             model.isGroup = true;
             const chatWid = window
                 .require('WAWebWidFactory')
-                .createWid(chat.id._serialized);
+                .createWid(window.WWebJS.getSerializedId(chat.id));
             const groupMetadata =
                 window.require('WAWebCollections').GroupMetadata ||
                 window.require('WAWebCollections').WAWebGroupMetadataCollection;
@@ -981,16 +1021,15 @@ exports.LoadUtils = () => {
 
         model.lastMessage = null;
         if (model.msgs && model.msgs.length) {
-            const lastMessage = chat.lastReceivedKey
-                ? window
-                      .require('WAWebCollections')
-                      .Msg.get(chat.lastReceivedKey._serialized) ||
+            const lastReceivedKey = window.WWebJS.getSerializedId(
+                chat.lastReceivedKey,
+            );
+            const lastMessage = lastReceivedKey
+                ? window.require('WAWebCollections').Msg.get(lastReceivedKey) ||
                   (
                       await window
                           .require('WAWebCollections')
-                          .Msg.getMessagesById([
-                              chat.lastReceivedKey._serialized,
-                          ])
+                          .Msg.getMessagesById([lastReceivedKey])
                   )?.messages?.[0]
                 : null;
             lastMessage &&
@@ -1002,7 +1041,7 @@ exports.LoadUtils = () => {
         delete model.msgUnsyncedButtonReplyMsgs;
         delete model.unsyncedButtonReplies;
 
-        return model;
+        return window.WWebJS.normalizeSerializedIds(model);
     };
 
     window.WWebJS.getContactModel = (contact) => {
@@ -1053,7 +1092,7 @@ exports.LoadUtils = () => {
         res.isMyContact = getIsMyContact(contact);
         res.isEnterprise = ContactMethods.getIsEnterprise(contact);
 
-        return res;
+        return window.WWebJS.normalizeSerializedIds(res);
     };
 
     window.WWebJS.getContact = async (contactId) => {
@@ -1320,9 +1359,9 @@ exports.LoadUtils = () => {
     };
 
     window.WWebJS.rejectCall = async (peerJid, id) => {
-        let userId = window
-            .require('WAWebUserPrefsMeUser')
-            .getMaybeMePnUser()._serialized;
+        let userId = window.WWebJS.getSerializedId(
+            window.require('WAWebUserPrefsMeUser').getMaybeMePnUser(),
+        );
 
         const stanza = window.require('WAWap').wap(
             'call',
@@ -1632,9 +1671,11 @@ exports.LoadUtils = () => {
                                       .membershipRequestsActionRejectParticipantMixins
                                       ?.value.error;
                             return {
-                                requesterId: window
-                                    .require('WAWebWidFactory')
-                                    .createWid(p.jid)._serialized,
+                                requesterId: window.WWebJS.getSerializedId(
+                                    window
+                                        .require('WAWebWidFactory')
+                                        .createWid(p.jid),
+                                ),
                                 ...(error
                                     ? {
                                           error: +error,
@@ -1651,11 +1692,14 @@ exports.LoadUtils = () => {
                     }
                 } else {
                     result.push({
-                        requesterId: window
-                            .require('WAWebJidToWid')
-                            .userJidToUserWid(
-                                participant.participantArgs[0].participantJid,
-                            )._serialized,
+                        requesterId: window.WWebJS.getSerializedId(
+                            window
+                                .require('WAWebJidToWid')
+                                .userJidToUserWid(
+                                    participant.participantArgs[0]
+                                        .participantJid,
+                                ),
+                        ),
                         message: 'ServerStatusCodeError',
                     });
                 }
@@ -1738,7 +1782,7 @@ exports.LoadUtils = () => {
     window.WWebJS.getStatusModel = (status) => {
         const res = status.serialize();
         delete res._msgs;
-        return res;
+        return window.WWebJS.normalizeSerializedIds(res);
     };
 
     window.WWebJS.getAllStatuses = () => {

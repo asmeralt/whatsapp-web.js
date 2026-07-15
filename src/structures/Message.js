@@ -823,7 +823,7 @@ class Message extends Base {
                             .Msg.getMessagesById([msgId])
                     )?.messages?.[0];
                 if (!msg) return null;
-                return msg.serialize();
+                return window.WWebJS.normalizeSerializedIds(msg.serialize());
             }, this.id._serialized);
             return new Payment(this.client, msg);
         }
@@ -853,7 +853,9 @@ class Message extends Base {
                 .require('WAWebCollections')
                 .Reactions.find(msgId);
             if (!msgReactions || !msgReactions.reactions.length) return null;
-            return msgReactions.reactions.serialize();
+            return window.WWebJS.normalizeSerializedIds(
+                msgReactions.reactions.serialize(),
+            );
         }, this.id._serialized);
 
         if (!reactions) {
@@ -931,7 +933,9 @@ class Message extends Base {
                         message,
                         options,
                     );
-                    return msgEdit.serialize();
+                    return window.WWebJS.normalizeSerializedIds(
+                        msgEdit.serialize(),
+                    );
                 }
                 return null;
             },
@@ -984,8 +988,11 @@ class Message extends Base {
                     .sendEventEditMessage(eventOptions, msg);
                 const editedMsg = window
                     .require('WAWebCollections')
-                    .Msg.get(msg.id._serialized);
-                return editedMsg?.serialize();
+                    .Msg.get(window.WWebJS.getSerializedId(msg.id));
+                return (
+                    editedMsg &&
+                    window.WWebJS.normalizeSerializedIds(editedMsg.serialize())
+                );
             },
             this.id._serialized,
             editedEventObject,

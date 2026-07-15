@@ -196,7 +196,7 @@ class Contact extends Base {
 
                 contact = await window
                     .require('WAWebCollections')
-                    .Contact.find(lid._serialized);
+                    .Contact.find(window.WWebJS.getSerializedId(lid));
             }
             await window
                 .require('WAWebBlockContactAction')
