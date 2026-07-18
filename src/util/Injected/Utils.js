@@ -1061,16 +1061,21 @@ exports.LoadUtils = () => {
             res.businessProfile = contact.businessProfile.serialize();
         }
 
-        res.isBlocked = contact.isContactBlocked;
-        if (!res.isBlocked) {
-            const alt = window
-                .require('WAWebApiContact')
-                .getAlternateUserWid(wid);
-            if (alt) {
-                res.isBlocked = !!window
-                    .require('WAWebCollections')
-                    .Blocklist.get(alt);
+        res.isBlocked = false;
+        try {
+            res.isBlocked = !!contact.isContactBlocked;
+            if (!res.isBlocked && wid.device == null) {
+                const alt = window
+                    .require('WAWebApiContact')
+                    .getAlternateUserWid(wid);
+                if (alt) {
+                    res.isBlocked = !!window
+                        .require('WAWebCollections')
+                        .Blocklist.get(alt);
+                }
             }
+        } catch (ignoredError) {
+            // blocked-status lookups throw for device wids
         }
 
         const ContactMethods = window.require('WAWebContactGetters');
