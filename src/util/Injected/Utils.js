@@ -1064,7 +1064,7 @@ exports.LoadUtils = () => {
         res.isBlocked = false;
         try {
             res.isBlocked = !!contact.isContactBlocked;
-            if (!res.isBlocked && wid.device == null) {
+            if (!res.isBlocked && !wid.device) {
                 const alt = window
                     .require('WAWebApiContact')
                     .getAlternateUserWid(wid);
