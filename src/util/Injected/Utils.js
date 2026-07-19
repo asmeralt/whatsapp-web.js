@@ -4,6 +4,44 @@ exports.LoadUtils = () => {
     window.WWebJS = {};
 
     /**
+     * Recent WhatsApp Web builds renamed the serialized ID string on wid and
+     * message key objects from `_serialized` to `$1`. Returns the serialized
+     * ID string of a wid-like value, accepting both shapes (or a plain string).
+     * @param {string|Object} idLike A wid, message key or serialized ID string
+     * @returns {string|undefined} The serialized ID string
+     */
+    window.WWebJS.getSerializedId = (idLike) => {
+        if (!idLike || typeof idLike === 'string') return idLike;
+        return idLike._serialized ?? idLike.$1;
+    };
+
+    /**
+     * Walks a serialized model and restores the legacy `_serialized` property
+     * on every ID-like object that only carries the new `$1` property, so the
+     * rest of the library (and its public API) can keep relying on it.
+     * @param {Object} obj The serialized model to normalize in place
+     * @returns {Object} The same object, normalized
+     */
+    window.WWebJS.normalizeSerializedIds = (obj, seen = new WeakSet()) => {
+        if (!obj || typeof obj !== 'object' || seen.has(obj)) return obj;
+        seen.add(obj);
+        if (obj._serialized === undefined && typeof obj.$1 === 'string') {
+            try {
+                obj._serialized = obj.$1;
+            } catch (ignoredError) {
+                // non-writable object
+            }
+        }
+        for (const key of Object.keys(obj)) {
+            const value = obj[key];
+            if (value && typeof value === 'object') {
+                window.WWebJS.normalizeSerializedIds(value, seen);
+            }
+        }
+        return obj;
+    };
+
+    /**
      * Helper function that compares between two WWeb versions. Its purpose is to help the developer to choose the correct code implementation depending on the comparison value and the WWeb version.
      * @param {string} lOperand The left operand for the WWeb version string to compare with
      * @param {string} operator The comparison operator
@@ -582,7 +620,7 @@ exports.LoadUtils = () => {
 
         return window
             .require('WAWebCollections')
-            .Msg.get(newMsgKey._serialized);
+            .Msg.get(window.WWebJS.getSerializedId(newMsgKey));
     };
 
     window.WWebJS.editMessage = async (msg, content, options = {}) => {
@@ -625,7 +663,9 @@ exports.LoadUtils = () => {
         await window
             .require('WAWebSendMessageEditAction')
             .sendMessageEdit(msg, content, internalOptions);
-        return window.require('WAWebCollections').Msg.get(msg.id._serialized);
+        return window
+            .require('WAWebCollections')
+            .Msg.get(window.WWebJS.getSerializedId(msg.id));
     };
 
     window.WWebJS.toStickerData = async (mediaInfo) => {
@@ -830,16 +870,17 @@ exports.LoadUtils = () => {
 
         if (typeof msg.id.remote === 'object') {
             msg.id = Object.assign({}, msg.id, {
-                remote: msg.id.remote._serialized,
+                remote: window.WWebJS.getSerializedId(msg.id.remote),
             });
         }
 
         delete msg.pendingAckUpdate;
 
-        return msg;
+        return window.WWebJS.normalizeSerializedIds(msg);
     };
 
     window.WWebJS.getChat = async (chatId, { getAsModel = true } = {}) => {
+        if (!chatId) return null;
         const isChannel = /@\w*newsletter\b/.test(chatId);
         const chatWid = window.require('WAWebWidFactory').createWid(chatId);
         let chat;
@@ -861,13 +902,19 @@ exports.LoadUtils = () => {
                 chat = null;
             }
         } else {
-            chat =
-                window.require('WAWebCollections').Chat.get(chatWid) ||
-                (
-                    await window
-                        .require('WAWebFindChatAction')
-                        .findOrCreateLatestChat(chatWid)
-                )?.chat;
+            try {
+                chat =
+                    window.require('WAWebCollections').Chat.get(chatWid) ||
+                    (
+                        await window
+                            .require('WAWebFindChatAction')
+                            .findOrCreateLatestChat(chatWid)
+                    )?.chat;
+            } catch (ignoredError) {
+                // lookups throw an IndexedDB DataError for LID-addressed
+                // chats that are not locally known
+                chat = null;
+            }
         }
 
         return getAsModel && chat
@@ -919,20 +966,37 @@ exports.LoadUtils = () => {
 
     window.WWebJS.getChats = async () => {
         const chats = window.require('WAWebCollections').Chat.getModelsArray();
-        const chatPromises = chats.map((chat) =>
-            window.WWebJS.getChatModel(chat),
-        );
-        return await Promise.all(chatPromises);
+        const models = [];
+        for (const chat of chats) {
+            try {
+                models.push(await window.WWebJS.getChatModel(chat));
+            } catch (ignoredError) {
+                // skip chats whose internal lookups throw (e.g. LID-addressed
+                // chats missing from IndexedDB) instead of failing the whole
+                // call
+            }
+        }
+        return models;
     };
 
     window.WWebJS.getChannels = async () => {
         const channels = window
             .require('WAWebCollections')
             .WAWebNewsletterCollection.getModelsArray();
-        const channelPromises = channels?.map((channel) =>
-            window.WWebJS.getChatModel(channel, { isChannel: true }),
-        );
-        return await Promise.all(channelPromises);
+        const models = [];
+        for (const channel of channels ?? []) {
+            try {
+                models.push(
+                    await window.WWebJS.getChatModel(channel, {
+                        isChannel: true,
+                    }),
+                );
+            } catch (ignoredError) {
+                // skip channels whose internal lookups throw instead of
+                // failing the whole call
+            }
+        }
+        return models;
     };
 
     window.WWebJS.getChatModel = async (chat, { isChannel = false } = {}) => {
@@ -953,11 +1017,16 @@ exports.LoadUtils = () => {
             model.isGroup = true;
             const chatWid = window
                 .require('WAWebWidFactory')
-                .createWid(chat.id._serialized);
+                .createWid(window.WWebJS.getSerializedId(chat.id));
             const groupMetadata =
                 window.require('WAWebCollections').GroupMetadata ||
                 window.require('WAWebCollections').WAWebGroupMetadataCollection;
-            await groupMetadata.update(chatWid);
+            try {
+                await groupMetadata.update(chatWid);
+            } catch (ignoredError) {
+                // update throws an IndexedDB DataError for LID-addressed
+                // groups; continue with whatever metadata is already cached
+            }
             const { toPn } = window.require('WAWebLidMigrationUtils');
             const serializedMetadata = chat.groupMetadata.serialize();
             for (const p of serializedMetadata.participants || []) {
@@ -981,16 +1050,15 @@ exports.LoadUtils = () => {
 
         model.lastMessage = null;
         if (model.msgs && model.msgs.length) {
-            const lastMessage = chat.lastReceivedKey
-                ? window
-                      .require('WAWebCollections')
-                      .Msg.get(chat.lastReceivedKey._serialized) ||
+            const lastReceivedKey = window.WWebJS.getSerializedId(
+                chat.lastReceivedKey,
+            );
+            const lastMessage = lastReceivedKey
+                ? window.require('WAWebCollections').Msg.get(lastReceivedKey) ||
                   (
                       await window
                           .require('WAWebCollections')
-                          .Msg.getMessagesById([
-                              chat.lastReceivedKey._serialized,
-                          ])
+                          .Msg.getMessagesById([lastReceivedKey])
                   )?.messages?.[0]
                 : null;
             lastMessage &&
@@ -1002,7 +1070,7 @@ exports.LoadUtils = () => {
         delete model.msgUnsyncedButtonReplyMsgs;
         delete model.unsyncedButtonReplies;
 
-        return model;
+        return window.WWebJS.normalizeSerializedIds(model);
     };
 
     window.WWebJS.getContactModel = (contact) => {
@@ -1022,16 +1090,21 @@ exports.LoadUtils = () => {
             res.businessProfile = contact.businessProfile.serialize();
         }
 
-        res.isBlocked = contact.isContactBlocked;
-        if (!res.isBlocked) {
-            const alt = window
-                .require('WAWebApiContact')
-                .getAlternateUserWid(wid);
-            if (alt) {
-                res.isBlocked = !!window
-                    .require('WAWebCollections')
-                    .Blocklist.get(alt);
+        res.isBlocked = false;
+        try {
+            res.isBlocked = !!contact.isContactBlocked;
+            if (!res.isBlocked && !wid.device) {
+                const alt = window
+                    .require('WAWebApiContact')
+                    .getAlternateUserWid(wid);
+                if (alt) {
+                    res.isBlocked = !!window
+                        .require('WAWebCollections')
+                        .Blocklist.get(alt);
+                }
             }
+        } catch (ignoredError) {
+            // blocked-status lookups throw for device wids
         }
 
         const ContactMethods = window.require('WAWebContactGetters');
@@ -1053,40 +1126,59 @@ exports.LoadUtils = () => {
         res.isMyContact = getIsMyContact(contact);
         res.isEnterprise = ContactMethods.getIsEnterprise(contact);
 
-        return res;
+        return window.WWebJS.normalizeSerializedIds(res);
     };
 
     window.WWebJS.getContact = async (contactId) => {
+        if (!contactId) return null;
         const contactWid = window
             .require('WAWebWidFactory')
             .createWid(contactId);
-        const contact = await window
-            .require('WAWebCollections')
-            .Contact.find(contactWid);
-        if (contact.isBusiness || contact.isEnterprise) {
-            const bizProfile = await window
+        let contact;
+        try {
+            contact = await window
                 .require('WAWebCollections')
-                .BusinessProfile.find(contactWid);
-            bizProfile.profileOptions && (contact.businessProfile = bizProfile);
+                .Contact.find(contactWid);
+        } catch (ignoredError) {
+            // find throws an IndexedDB DataError for LID/device-addressed
+            // contacts; fall back to the in-memory collection
+            contact = window.require('WAWebCollections').Contact.get(contactId);
+        }
+        if (!contact) return null;
+        if (contact.isBusiness || contact.isEnterprise) {
+            try {
+                const bizProfile = await window
+                    .require('WAWebCollections')
+                    .BusinessProfile.find(contactWid);
+                bizProfile.profileOptions &&
+                    (contact.businessProfile = bizProfile);
+            } catch (ignoredError) {
+                // business profile lookup is best-effort
+            }
         }
         return window.WWebJS.getContactModel(contact);
     };
 
-    window.WWebJS.getContacts = () => {
+    window.WWebJS.getContacts = async () => {
         const contacts = window
             .require('WAWebCollections')
             .Contact.getModelsArray();
-        return Promise.all(
-            contacts.map(async (contact) => {
+        const models = [];
+        for (const contact of contacts) {
+            try {
                 if (contact.isBusiness || contact.isEnterprise) {
                     await window
                         .require('WAWebCollections')
                         .BusinessProfile.find(contact.id)
                         .catch(() => {});
                 }
-                return window.WWebJS.getContactModel(contact);
-            }),
-        );
+                models.push(window.WWebJS.getContactModel(contact));
+            } catch (ignoredError) {
+                // skip contacts whose serialization throws instead of
+                // failing the whole call
+            }
+        }
+        return models;
     };
 
     window.WWebJS.mediaInfoToFile = ({ data, mimetype, filename }) => {
@@ -1112,10 +1204,17 @@ exports.LoadUtils = () => {
      * @returns {Promise<{blob: Blob, mimetype: string, filename: string, filesize: number}|null>}
      */
     window.WWebJS.resolveMediaBlob = async (msgId) => {
+        if (!msgId) return null;
         const { Msg } = window.require('WAWebCollections');
-        const msg =
-            Msg.get(msgId) ||
-            (await Msg.getMessagesById([msgId]))?.messages?.[0];
+        let msg = Msg.get(msgId);
+        if (!msg) {
+            try {
+                msg = (await Msg.getMessagesById([msgId]))?.messages?.[0];
+            } catch (ignoredError) {
+                // getMessagesById throws an IndexedDB DataError for
+                // LID-addressed message keys
+            }
+        }
 
         if (
             !msg ||
@@ -1128,11 +1227,16 @@ exports.LoadUtils = () => {
         // Always call internal downloadMedia - never skip based on
         // mediaStage, because cache eviction can leave stage=RESOLVED
         // with empty InMemoryMediaBlobCache.
-        await msg.downloadMedia({
-            downloadEvenIfExpensive: true,
-            rmrReason: 1,
-            isUserInitiated: true,
-        });
+        try {
+            await msg.downloadMedia({
+                downloadEvenIfExpensive: true,
+                rmrReason: 1,
+                isUserInitiated: true,
+            });
+        } catch (ignoredError) {
+            // the internal blob-cache path throws on current builds for
+            // some media; fall through to the direct download below
+        }
 
         if (
             msg.mediaData.mediaStage.includes('ERROR') ||
@@ -1150,6 +1254,27 @@ exports.LoadUtils = () => {
             blob = cached;
         } else if (msg.mediaObject?.mediaBlob) {
             blob = msg.mediaObject.mediaBlob.forceToBlob();
+        }
+
+        if (!blob && msg.directPath && msg.mediaKey) {
+            // Direct download & decrypt from the CDN, bypassing the
+            // blob cache entirely.
+            try {
+                const buffer = await window
+                    .require('WAWebDownloadManager')
+                    .downloadManager.downloadAndMaybeDecrypt({
+                        directPath: msg.directPath,
+                        encFilehash: msg.encFilehash,
+                        filehash: msg.filehash,
+                        mediaKey: msg.mediaKey,
+                        mediaKeyTimestamp: msg.mediaKeyTimestamp,
+                        type: msg.type,
+                        signal: new AbortController().signal,
+                    });
+                blob = new Blob([buffer], { type: msg.mimetype });
+            } catch (ignoredError) {
+                // direct download failed as well
+            }
         }
 
         if (!blob) return null;
@@ -1320,9 +1445,9 @@ exports.LoadUtils = () => {
     };
 
     window.WWebJS.rejectCall = async (peerJid, id) => {
-        let userId = window
-            .require('WAWebUserPrefsMeUser')
-            .getMaybeMePnUser()._serialized;
+        let userId = window.WWebJS.getSerializedId(
+            window.require('WAWebUserPrefsMeUser').getMaybeMePnUser(),
+        );
 
         const stanza = window.require('WAWap').wap(
             'call',
@@ -1632,9 +1757,11 @@ exports.LoadUtils = () => {
                                       .membershipRequestsActionRejectParticipantMixins
                                       ?.value.error;
                             return {
-                                requesterId: window
-                                    .require('WAWebWidFactory')
-                                    .createWid(p.jid)._serialized,
+                                requesterId: window.WWebJS.getSerializedId(
+                                    window
+                                        .require('WAWebWidFactory')
+                                        .createWid(p.jid),
+                                ),
                                 ...(error
                                     ? {
                                           error: +error,
@@ -1651,11 +1778,14 @@ exports.LoadUtils = () => {
                     }
                 } else {
                     result.push({
-                        requesterId: window
-                            .require('WAWebJidToWid')
-                            .userJidToUserWid(
-                                participant.participantArgs[0].participantJid,
-                            )._serialized,
+                        requesterId: window.WWebJS.getSerializedId(
+                            window
+                                .require('WAWebJidToWid')
+                                .userJidToUserWid(
+                                    participant.participantArgs[0]
+                                        .participantJid,
+                                ),
+                        ),
                         message: 'ServerStatusCodeError',
                     });
                 }
@@ -1738,7 +1868,7 @@ exports.LoadUtils = () => {
     window.WWebJS.getStatusModel = (status) => {
         const res = status.serialize();
         delete res._msgs;
-        return res;
+        return window.WWebJS.normalizeSerializedIds(res);
     };
 
     window.WWebJS.getAllStatuses = () => {

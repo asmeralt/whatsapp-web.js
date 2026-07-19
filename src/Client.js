@@ -339,7 +339,7 @@ class Client extends EventEmitter {
                         this.info = new ClientInfo(
                             this,
                             await this.pupPage.evaluate(() => {
-                                return {
+                                return window.WWebJS.normalizeSerializedIds({
                                     ...window
                                         .require('WAWebConnModel')
                                         .Conn.serialize(),
@@ -350,7 +350,7 @@ class Client extends EventEmitter {
                                         window
                                             .require('WAWebUserPrefsMeUser')
                                             .getMaybeMeLidUser(),
-                                };
+                                });
                             }),
                         );
 
@@ -1141,7 +1141,9 @@ class Client extends EventEmitter {
                 internalCallMap.set = function (key, value) {
                     window.onIncomingCall({
                         id: value.id,
-                        peerJid: value.peerJid,
+                        peerJid:
+                            window.WWebJS.getSerializedId(value.peerJid) ??
+                            value.peerJid,
                         isVideo: value.isVideo,
                         isGroup: value.isGroup,
                         canHandleLocally: value.canHandleLocally,
@@ -1219,7 +1221,9 @@ class Client extends EventEmitter {
                 });
             });
             Chat.on('change:unreadCount', (chat) => {
-                window.onChatUnreadCountEvent(chat);
+                window.onChatUnreadCountEvent({
+                    id: window.WWebJS.getSerializedId(chat.id) ?? chat.id,
+                });
             });
 
             window.WWebJS.injectToFunction(
@@ -1230,11 +1234,17 @@ class Client extends EventEmitter {
                 (module, origFunction, ...args) => {
                     window.onReaction(
                         args[0].map((reaction) => {
-                            const msgKey = reaction.id;
-                            const parentMsgKey = reaction.reactionParentKey;
+                            const msgKey = window.WWebJS.normalizeSerializedIds(
+                                reaction.id,
+                            );
+                            const parentMsgKey =
+                                window.WWebJS.normalizeSerializedIds(
+                                    reaction.reactionParentKey,
+                                );
                             const timestamp = reaction.reactionTimestamp / 1000;
                             const sender = reaction.author ?? reaction.from;
-                            const senderUserJid = sender._serialized;
+                            const senderUserJid =
+                                window.WWebJS.getSerializedId(sender);
 
                             return {
                                 ...reaction,
@@ -1258,18 +1268,24 @@ class Client extends EventEmitter {
                 async (module, origFunction, ...args) => {
                     const votes = await Promise.all(
                         args[0].map(async (vote) => {
-                            const msgKey = vote.id;
-                            const parentMsgKey = vote.pollUpdateParentKey;
+                            const msgKey = window.WWebJS.normalizeSerializedIds(
+                                vote.id,
+                            );
+                            const parentMsgKey =
+                                window.WWebJS.normalizeSerializedIds(
+                                    vote.pollUpdateParentKey,
+                                );
                             const timestamp = vote.t / 1000;
                             const sender = vote.author ?? vote.from;
-                            const senderUserJid = sender._serialized;
+                            const senderUserJid =
+                                window.WWebJS.getSerializedId(sender);
+                            const parentMsgId =
+                                window.WWebJS.getSerializedId(parentMsgKey);
 
-                            let parentMessage = Msg.get(
-                                parentMsgKey._serialized,
-                            );
+                            let parentMessage = Msg.get(parentMsgId);
                             if (!parentMessage) {
                                 const fetched = await Msg.getMessagesById([
-                                    parentMsgKey._serialized,
+                                    parentMsgId,
                                 ]);
                                 parentMessage = fetched?.messages?.[0] || null;
                             }
@@ -1281,7 +1297,11 @@ class Client extends EventEmitter {
                                 parentMsgKey,
                                 senderUserJid,
                                 timestamp,
-                                parentMessage,
+                                parentMessage: parentMessage
+                                    ? window.WWebJS.getMessageModel(
+                                          parentMessage,
+                                      )
+                                    : null,
                             };
                         }),
                     );
@@ -1348,7 +1368,13 @@ class Client extends EventEmitter {
      */
     async logout() {
         await this.pupPage.evaluate(() => {
-            return window.require('WAWebSocketModel').Socket.logout();
+            if (typeof window.require !== 'function') return;
+            try {
+                return window.require('WAWebSocketModel').Socket.logout();
+            } catch (ignoredError) {
+                // module resolution throws while the SPA is re-rendering
+                return;
+            }
         });
         await this.pupBrowser.close();
 
@@ -1800,7 +1826,7 @@ class Client extends EventEmitter {
             return window.WWebJS.getContact(contactId);
         }, contactId);
 
-        return ContactFactory.create(this, contact);
+        return contact ? ContactFactory.create(this, contact) : undefined;
     }
 
     /**
@@ -1893,12 +1919,13 @@ class Client extends EventEmitter {
      */
     async acceptInvite(inviteCode) {
         const res = await this.pupPage.evaluate(async (inviteCode) => {
-            return await window
+            const result = await window
                 .require('WAWebGroupInviteJob')
                 .joinGroupViaInvite(inviteCode);
+            return { gid: window.WWebJS.getSerializedId(result.gid) };
         }, inviteCode);
 
-        return res.gid._serialized;
+        return res.gid;
     }
 
     /**
@@ -2034,7 +2061,13 @@ class Client extends EventEmitter {
      */
     async getState() {
         return await this.pupPage.evaluate(() => {
-            return window.require('WAWebSocketModel').Socket.state ?? null;
+            if (typeof window.require !== 'function') return null;
+            try {
+                return window.require('WAWebSocketModel').Socket.state ?? null;
+            } catch (ignoredError) {
+                // module resolution throws while the SPA is re-rendering
+                return null;
+            }
         });
     }
 
@@ -2240,13 +2273,17 @@ class Client extends EventEmitter {
             }
 
             if (contact.commonGroups) {
-                return contact.commonGroups.serialize();
+                return window.WWebJS.normalizeSerializedIds(
+                    contact.commonGroups.serialize(),
+                );
             }
             const status = await window
                 .require('WAWebFindCommonGroupsContactAction')
                 .findCommonGroups(contact);
             if (status) {
-                return contact.commonGroups.serialize();
+                return window.WWebJS.normalizeSerializedIds(
+                    contact.commonGroups.serialize(),
+                );
             }
             return [];
         }, contactId);
@@ -2442,7 +2479,9 @@ class Client extends EventEmitter {
                         (participant.wid = window
                             .require('WAWebApiContact')
                             .getPhoneNumber(participant.wid));
-                    const participantId = participant.wid._serialized;
+                    const participantId = window.WWebJS.getSerializedId(
+                        participant.wid,
+                    );
                     const statusCode = participant.error || 200;
 
                     if (autoSendInviteV4 && statusCode === 403) {
@@ -2458,7 +2497,9 @@ class Client extends EventEmitter {
                                     (await window
                                         .require('WAWebCollections')
                                         .Chat.find(participant.wid)),
-                                createGroupResult.wid._serialized,
+                                window.WWebJS.getSerializedId(
+                                    createGroupResult.wid,
+                                ),
                                 createGroupResult.subject,
                                 participant.invite_code,
                                 participant.invite_code_exp,
@@ -2492,7 +2533,9 @@ class Client extends EventEmitter {
 
                 return {
                     title: title,
-                    gid: createGroupResult.wid,
+                    gid: window.WWebJS.normalizeSerializedIds(
+                        createGroupResult.wid,
+                    ),
                     participants: participantData,
                 };
             },
@@ -2932,7 +2975,7 @@ class Client extends EventEmitter {
             let chatIds = window
                 .require('WAWebCollections')
                 .Blocklist.getModelsArray()
-                .map((a) => a.id._serialized);
+                .map((a) => window.WWebJS.getSerializedId(a.id));
             return Promise.all(
                 chatIds.map((id) => window.WWebJS.getContact(id)),
             );
@@ -2993,7 +3036,9 @@ class Client extends EventEmitter {
                 );
                 const chats = window
                     .require('WAWebCollections')
-                    .Chat.filter((e) => chatIds.includes(e.id._serialized));
+                    .Chat.filter((e) =>
+                        chatIds.includes(window.WWebJS.getSerializedId(e.id)),
+                    );
 
                 let actions = labels.map((label) => ({
                     id: label.id,
@@ -3374,8 +3419,8 @@ class Client extends EventEmitter {
                         await window.WWebJS.enforceLidAndPnRetrieval(userId);
 
                     return {
-                        lid: lid?._serialized,
-                        pn: phone?._serialized,
+                        lid: window.WWebJS.getSerializedId(lid),
+                        pn: window.WWebJS.getSerializedId(phone),
                     };
                 }),
             );
@@ -3446,9 +3491,11 @@ class Client extends EventEmitter {
 
             if (!serialized) return null;
 
-            serialized.chatId = window
-                .require('WAWebJidToWid')
-                .userJidToUserWid(serialized.chatJid)._serialized;
+            serialized.chatId = window.WWebJS.getSerializedId(
+                window
+                    .require('WAWebJidToWid')
+                    .userJidToUserWid(serialized.chatJid),
+            );
             delete serialized.chatJid;
 
             return serialized;
@@ -3469,7 +3516,7 @@ class Client extends EventEmitter {
         const pollVotes = await this.pupPage.evaluate(async (msg) => {
             const msgKey = window
                 .require('WAWebMsgKey')
-                .fromString(msg.id._serialized);
+                .fromString(window.WWebJS.getSerializedId(msg.id));
             let pollVotes = await window
                 .require('WAWebPollsVotesSchema')
                 .getTable()

@@ -158,11 +158,17 @@ class Contact extends Base {
             const contact = await window
                 .require('WAWebCollections')
                 .Contact.find(contactId);
-            const lid = contact.id.isLid()
-                ? contact.id
-                : window
-                      .require('WAWebApiContact')
-                      .getAlternateUserWid(contact.id);
+            let lid = contact.id;
+            if (!contact.id.isLid()) {
+                try {
+                    lid = window
+                        .require('WAWebApiContact')
+                        .getAlternateUserWid(contact.id);
+                } catch (ignoredError) {
+                    // getAlternateUserWid throws for device wids;
+                    // fall back to blocking by the contact's own wid
+                }
+            }
             const ContactToBlock = {
                 id: lid,
                 isContactBlocked: false,
@@ -190,13 +196,18 @@ class Contact extends Base {
                 .require('WAWebCollections')
                 .Contact.find(contactId);
             if (!contact.id.isLid()) {
-                const lid = window
-                    .require('WAWebApiContact')
-                    .getAlternateUserWid(contact.id);
+                try {
+                    const lid = window
+                        .require('WAWebApiContact')
+                        .getAlternateUserWid(contact.id);
 
-                contact = await window
-                    .require('WAWebCollections')
-                    .Contact.find(lid._serialized);
+                    contact = await window
+                        .require('WAWebCollections')
+                        .Contact.find(window.WWebJS.getSerializedId(lid));
+                } catch (ignoredError) {
+                    // getAlternateUserWid throws for device wids;
+                    // fall back to unblocking the contact we already have
+                }
             }
             await window
                 .require('WAWebBlockContactAction')
