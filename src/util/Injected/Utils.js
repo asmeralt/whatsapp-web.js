@@ -4,6 +4,28 @@ exports.LoadUtils = () => {
     window.WWebJS = {};
 
     /**
+     * Runs a single call against WhatsApp's internals under a label, and
+     * prefixes that label onto anything it throws. WhatsApp's bundle is
+     * minified and several of its errors are generic (most notably "Data
+     * passed to getter must include an id property"), so without a label an
+     * error raised anywhere inside one `pupPage.evaluate` is indistinguishable
+     * from an error raised anywhere else in it.
+     * @param {string} label Name of the step being run
+     * @param {Function} fn The step
+     * @returns {Promise<*>} Whatever the step returns
+     */
+    window.WWebJS.step = async (label, fn) => {
+        try {
+            return await fn();
+        } catch (error) {
+            const labelled =
+                error instanceof Error ? error : new Error(String(error));
+            labelled.message = `[WWebJS:${label}] ${labelled.message}`;
+            throw labelled;
+        }
+    };
+
+    /**
      * Recent WhatsApp Web builds renamed the serialized ID string on wid and
      * message key objects from `_serialized` to `$1`. Returns the serialized
      * ID string of a wid-like value, accepting both shapes (or a plain string).
