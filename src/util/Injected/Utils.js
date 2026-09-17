@@ -633,16 +633,26 @@ exports.LoadUtils = () => {
             return msg;
         }
 
-        const [msgPromise, sendMsgResultPromise] = window
-            .require('WAWebSendMsgChatAction')
-            .addAndSendMsgToChat(chat, message);
-        await msgPromise;
+        const [msgPromise, sendMsgResultPromise] = await window.WWebJS.step(
+            'addAndSendMsgToChat',
+            () =>
+                window
+                    .require('WAWebSendMsgChatAction')
+                    .addAndSendMsgToChat(chat, message),
+        );
+        await window.WWebJS.step('awaitAddedMsg', () => msgPromise);
 
-        if (options.waitUntilMsgSent) await sendMsgResultPromise;
+        if (options.waitUntilMsgSent)
+            await window.WWebJS.step(
+                'awaitSendMsgResult',
+                () => sendMsgResultPromise,
+            );
 
-        return window
-            .require('WAWebCollections')
-            .Msg.get(window.WWebJS.getSerializedId(newMsgKey));
+        return await window.WWebJS.step('getSentMsg', () =>
+            window
+                .require('WAWebCollections')
+                .Msg.get(window.WWebJS.getSerializedId(newMsgKey)),
+        );
     };
 
     window.WWebJS.editMessage = async (msg, content, options = {}) => {
@@ -756,9 +766,8 @@ exports.LoadUtils = () => {
     ) => {
         const file = window.WWebJS.mediaInfoToFile(mediaInfo);
         const OpaqueData = window.require('WAWebMediaOpaqueData');
-        const opaqueData = await OpaqueData.createFromData(
-            file,
-            mediaInfo.mimetype,
+        const opaqueData = await window.WWebJS.step('createOpaqueData', () =>
+            OpaqueData.createFromData(file, mediaInfo.mimetype),
         );
         const mediaParams = {
             asSticker: forceSticker,
@@ -771,22 +780,66 @@ exports.LoadUtils = () => {
             mediaParams.maxDimension = 2560;
         }
 
-        const mediaPrep = window
-            .require('WAWebPrepRawMedia')
-            .prepRawMedia(opaqueData, mediaParams);
-        const mediaData = await mediaPrep.waitForPrep();
-        const mediaObject = window
-            .require('WAWebMediaStorage')
-            .getOrCreateMediaObject(mediaData.filehash);
-        const mediaType = window.require('WAWebMmsMediaTypes').msgToMediaType({
-            type: mediaData.type,
-            isGif: mediaData.isGif,
-            isNewsletter: sendToChannel,
-        });
+        const mediaData = await window.WWebJS.step('prepRawMedia', () =>
+            window
+                .require('WAWebPrepRawMedia')
+                .prepRawMedia(opaqueData, mediaParams)
+                .waitForPrep(),
+        );
 
-        if (!mediaData.filehash) {
-            throw new Error('media-fault: sendToChat filehash undefined');
+        if (!mediaData) {
+            throw new Error('media-fault: sendToChat prepped no media');
         }
+
+        // The filehash is the key the media storage getter memoizes on, so an
+        // undefined one surfaces as WhatsApp's own opaque "Data passed to
+        // getter must include an id property" error rather than anything
+        // actionable. When a WhatsApp build stops handing one back from the
+        // prep step, hash the prepped media ourselves: filehash is the base64
+        // SHA-256 of the plaintext bytes, which is what getFileHash computes
+        // (and what processStickerData above already relies on).
+        if (!mediaData.filehash) {
+            const hashSource =
+                mediaData.mediaBlob &&
+                typeof mediaData.mediaBlob.arrayBuffer === 'function'
+                    ? mediaData.mediaBlob
+                    : file;
+            const filehash = await window.WWebJS.step('computeFilehash', () =>
+                window.WWebJS.getFileHash(hashSource),
+            );
+
+            if (!filehash) {
+                throw new Error(
+                    `media-fault: sendToChat filehash undefined (prepped media keys: ${Object.keys(
+                        mediaData,
+                    ).join(', ')})`,
+                );
+            }
+
+            console.warn(
+                `[WWebJS] prepped media carried no filehash, computed one from the ${
+                    hashSource === file ? 'source file' : 'prepped blob'
+                }`,
+            );
+            typeof mediaData.set === 'function'
+                ? mediaData.set({ filehash })
+                : (mediaData.filehash = filehash);
+        }
+
+        const mediaObject = await window.WWebJS.step(
+            'getOrCreateMediaObject',
+            () =>
+                window
+                    .require('WAWebMediaStorage')
+                    .getOrCreateMediaObject(mediaData.filehash),
+        );
+        const mediaType = await window.WWebJS.step('msgToMediaType', () =>
+            window.require('WAWebMmsMediaTypes').msgToMediaType({
+                type: mediaData.type,
+                isGif: mediaData.isGif,
+                isNewsletter: sendToChannel,
+            }),
+        );
 
         if (
             (forceVoice && mediaData.type === 'ptt') ||
@@ -805,7 +858,9 @@ exports.LoadUtils = () => {
         }
 
         mediaData.renderableUrl = mediaData.mediaBlob.url();
-        mediaObject.consolidate(mediaData.toJSON());
+        await window.WWebJS.step('consolidateMediaObject', () =>
+            mediaObject.consolidate(mediaData.toJSON()),
+        );
 
         mediaData.mediaBlob.autorelease();
         const shouldUseMediaCache = window
@@ -835,9 +890,11 @@ exports.LoadUtils = () => {
         const { uploadMedia, uploadUnencryptedMedia } = window.require(
             'WAWebMediaMmsV4Upload',
         );
-        const uploadedMedia = !sendToChannel
-            ? await uploadMedia(dataToUpload)
-            : await uploadUnencryptedMedia(dataToUpload);
+        const uploadedMedia = await window.WWebJS.step('uploadMedia', () =>
+            !sendToChannel
+                ? uploadMedia(dataToUpload)
+                : uploadUnencryptedMedia(dataToUpload),
+        );
 
         const mediaEntry = uploadedMedia.mediaEntry;
         if (!mediaEntry) {
