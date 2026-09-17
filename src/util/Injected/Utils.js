@@ -489,14 +489,30 @@ exports.LoadUtils = () => {
         const lidUser = getMaybeMeLidUser();
         const meUser = getMaybeMePnUser();
         const newId = await window.require('WAWebMsgKey').newId();
-        let from = chat.id.isLid() ? lidUser : meUser;
+
+        // Both getters are "maybe": an account may hold only one of the two
+        // identities, and recent WhatsApp builds leave the phone-number one
+        // undefined on LID-migrated accounts. An undefined `from` reaches the
+        // Msg model as an undefined sender, where WhatsApp's memoized getter
+        // rejects it with "Data passed to getter must include an id property",
+        // so fall back to whichever identity the account does have.
+        let from = chat.id.isLid() ? (lidUser ?? meUser) : (meUser ?? lidUser);
         let participant;
 
         if (typeof chat.id?.isGroup === 'function' && chat.id.isGroup()) {
             from =
                 chat.groupMetadata && chat.groupMetadata.isLidAddressingMode
-                    ? lidUser
-                    : meUser;
+                    ? (lidUser ?? meUser)
+                    : (meUser ?? lidUser);
+        }
+
+        if (!from) {
+            throw new Error(
+                'send-fault: neither a LID nor a phone-number identity is available for this account',
+            );
+        }
+
+        if (typeof chat.id?.isGroup === 'function' && chat.id.isGroup()) {
             participant = window
                 .require('WAWebWidFactory')
                 .asUserWidOrThrow(from);
