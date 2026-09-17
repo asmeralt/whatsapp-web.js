@@ -70,6 +70,41 @@ exports.LoadUtils = () => {
     };
 
     /**
+     * Builds the plain media payload to merge into an outgoing message.
+     *
+     * WhatsApp's models keep their attributes in `__x_<prop>` storage slots, so
+     * spreading a live model copies those raw slots rather than the public
+     * properties. The prepped media is a `WAWebMediaData` model and declares an
+     * `id` of its own, so its `__x_id` slot rides along into the message data
+     * and, because the Msg model has no `__x_id` property defined, gets
+     * assigned straight over the slot holding the message key. The message then
+     * initializes with no id and WhatsApp rejects it from its memoized sender
+     * getter ("Data passed to getter must include an id property").
+     * @param {Object} mediaOptions Prepped media: a model, or a plain object
+     * @returns {Object} The media fields, free of model storage slots
+     */
+    window.WWebJS.getMediaPayload = (mediaOptions) => {
+        if (!mediaOptions || typeof mediaOptions !== 'object') return {};
+
+        const payload =
+            typeof mediaOptions.toJSON === 'function'
+                ? mediaOptions.toJSON()
+                : {};
+
+        // Fields assigned onto the model directly (a caption, for one) are not
+        // declared properties, so they are absent from the serialized form.
+        for (const key of Object.keys(mediaOptions)) {
+            if (key.startsWith('__x_')) continue;
+            if (payload[key] === undefined) payload[key] = mediaOptions[key];
+        }
+
+        // The message key is the message's own; media never supplies it.
+        delete payload.id;
+
+        return payload;
+    };
+
+    /**
      * Helper function that compares between two WWeb versions. Its purpose is to help the developer to choose the correct code implementation depending on the comparison value and the WWeb version.
      * @param {string} lOperand The left operand for the WWeb version string to compare with
      * @param {string} operator The comparison operator
@@ -552,8 +587,7 @@ exports.LoadUtils = () => {
             isNewMsg: true,
             type: 'chat',
             ...ephemeralFields,
-            ...mediaOptions,
-            ...(mediaOptions.toJSON ? mediaOptions.toJSON() : {}),
+            ...window.WWebJS.getMediaPayload(mediaOptions),
             ...quotedMsgOptions,
             ...locationOptions,
             ...pollOptions,
@@ -564,6 +598,13 @@ exports.LoadUtils = () => {
             ...botOptions,
             ...extraOptions,
         };
+
+        // Belt and braces for the above: whatever the source, a `__x_` key here
+        // would be assigned straight onto a Msg model storage slot and quietly
+        // overwrite the property that slot belongs to.
+        for (const key of Object.keys(message)) {
+            if (key.startsWith('__x_')) delete message[key];
+        }
 
         // Bot's won't reply if canonicalUrl is set (linking)
         if (botOptions) {
