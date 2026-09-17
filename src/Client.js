@@ -1618,32 +1618,56 @@ class Client extends EventEmitter {
 
         const sentMsg = await this.pupPage.evaluate(
             async (chatId, content, options, sendSeen) => {
-                const chat = await window.WWebJS.step('getChat', () =>
-                    window.WWebJS.getChat(chatId, { getAsModel: false }),
-                );
-
-                if (!chat) return null;
-
-                if (sendSeen) {
-                    await window.WWebJS.step('sendSeen', () =>
-                        window.WWebJS.sendSeen(chatId),
+                try {
+                    const chat = await window.WWebJS.step('getChat', () =>
+                        window.WWebJS.getChat(chatId, { getAsModel: false }),
                     );
-                }
 
-                const msg = await window.WWebJS.step('sendMessage', () =>
-                    window.WWebJS.sendMessage(chat, content, options),
-                );
-                return msg
-                    ? await window.WWebJS.step('getMessageModel', () =>
-                          window.WWebJS.getMessageModel(msg),
-                      )
-                    : undefined;
+                    if (!chat) return null;
+
+                    if (sendSeen) {
+                        await window.WWebJS.step('sendSeen', () =>
+                            window.WWebJS.sendSeen(chatId),
+                        );
+                    }
+
+                    const msg = await window.WWebJS.step('sendMessage', () =>
+                        window.WWebJS.sendMessage(chat, content, options),
+                    );
+                    return msg
+                        ? await window.WWebJS.step('getMessageModel', () =>
+                              window.WWebJS.getMessageModel(msg),
+                          )
+                        : undefined;
+                } catch (error) {
+                    // Returned as data rather than rethrown: Puppeteer renders
+                    // a page exception from the stack string V8 captured when
+                    // the error was built, so anything added to it inside the
+                    // page is dropped on the way to Node.
+                    return {
+                        __wwebjsError: {
+                            step: error && error.wwebjsStep,
+                            message: error && error.message,
+                            stack: error && error.stack,
+                        },
+                    };
+                }
             },
             chatId,
             content,
             internalOptions,
             sendSeen,
         );
+
+        if (sentMsg && sentMsg.__wwebjsError) {
+            const { step, message, stack } = sentMsg.__wwebjsError;
+            const error = new Error(
+                `sendMessage failed${step ? ` at step "${step}"` : ''}: ${message}`,
+            );
+            error.wwebjsStep = step;
+            error.browserStack = stack;
+            throw error;
+        }
 
         return sentMsg ? new Message(this, sentMsg) : undefined;
     }

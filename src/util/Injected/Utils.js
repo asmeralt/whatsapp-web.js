@@ -18,9 +18,15 @@ exports.LoadUtils = () => {
         try {
             return await fn();
         } catch (error) {
-            const labelled =
+            // A new Error, not a relabelled one: an error crossing the
+            // Puppeteer boundary is rendered from the stack string V8 captured
+            // when it was constructed, so mutating `message` after the fact
+            // changes nothing that reaches Node.
+            const original =
                 error instanceof Error ? error : new Error(String(error));
-            labelled.message = `[WWebJS:${label}] ${labelled.message}`;
+            const labelled = new Error(`[WWebJS:${label}] ${original.message}`);
+            labelled.wwebjsStep = label;
+            labelled.stack = `${labelled.stack}\nCaused by: ${original.stack}`;
             throw labelled;
         }
     };
